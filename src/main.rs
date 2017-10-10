@@ -1,8 +1,10 @@
+extern crate clap;
 extern crate curl;
 extern crate rand;
 #[macro_use]
 extern crate serde_json;
 
+use clap::{Arg, App, SubCommand};
 use rand::{thread_rng, Rng};
 use std::env;
 use std::fmt;
@@ -70,14 +72,28 @@ impl Error for MissingSwiftUrl {
 
 
 fn main() {
-  let settings = get_os_settings();
-  println!("{:?}", settings);
-  let auth_info = get_token(settings).unwrap();
-  let server_info =
-    get_temp_url_key(&auth_info)
-      .or_else(|e| set_temp_url_key(&auth_info, &create_random_key()))
-      .unwrap();
-  println!("{:?}", server_info);
+  let matches =
+    App::new("backup2swift")
+      .subcommand(SubCommand::with_name("setup")
+        .about("setup container and create request signature")
+        .arg(Arg::with_name("container")
+            .takes_value(true)
+            .required(true)
+            .help("destination container name")))
+      .get_matches();
+  if let Some(matches) = matches.subcommand_matches("test") {
+    let settings = get_os_settings();
+    println!("{:?}", settings);
+    let auth_info = get_token(settings).unwrap();
+    let server_info =
+      get_temp_url_key(&auth_info)
+        .or_else(|e| set_temp_url_key(&auth_info, &create_random_key()))
+        .unwrap();
+    println!("{:?}", server_info);
+  } else {
+    println!("try 'backup2swift --help' for more information");
+    ::std::process::exit(2)
+  }
 }
 
 fn get_env(name: &str) -> String {
