@@ -1,7 +1,9 @@
 extern crate curl;
+extern crate rand;
 #[macro_use]
 extern crate serde_json;
 
+use rand::{thread_rng, Rng};
 use std::env;
 use std::fmt;
 use std::error::Error;
@@ -22,7 +24,7 @@ struct OpenStackConfig {
 }
 
 #[derive(Debug)]
-struct SwiftInfo {
+struct SwiftAuthInfo {
   token: String,
   url: String
 }
@@ -70,9 +72,12 @@ impl Error for MissingSwiftUrl {
 fn main() {
   let settings = get_os_settings();
   println!("{:?}", settings);
-  let info = get_token(settings).unwrap();
-
-  println!("{:?}", info);
+  let auth_info = get_token(settings).unwrap();
+  let server_info =
+    get_temp_url_key(&auth_info)
+      .or_else(|e| set_temp_url_key(&auth_info, &create_random_key()))
+      .unwrap();
+  println!("{:?}", server_info);
 }
 
 fn get_env(name: &str) -> String {
@@ -106,7 +111,7 @@ fn get_os_settings() -> OpenStackConfig {
   }
 }
 
-fn get_token(config: OpenStackConfig) -> Result<SwiftInfo, Box<Error>> {
+fn get_token(config: OpenStackConfig) -> Result<SwiftAuthInfo, Box<Error>> {
   let mut dst = Vec::new();
   let mut easy = Easy::new();
   let json = json!({
@@ -184,7 +189,7 @@ fn get_token(config: OpenStackConfig) -> Result<SwiftInfo, Box<Error>> {
         .map_err(|e| From::from(e))
         .and_then(|opt_url| {
           opt_url
-            .map(|url| SwiftInfo { token, url })
+            .map(|url| SwiftAuthInfo { token, url })
             .ok_or(MissingSwiftUrl)
             .map_err(|e| From::from(e))
         })
@@ -217,4 +222,64 @@ fn get_swift_endpoint<'a,I>(
       })
     })
     .and_then(|endpoint| endpoint.get("url").and_then(|v| v.as_str())).map(|s| s.to_owned())
+}
+
+fn get_temp_url_key(info: &SwiftAuthInfo) -> Result<String, Box<Error>> {
+  let mut opt_temp_url_key: Option<String> = None;
+  let mut easy = Easy::new();
+  let mut headers = List::new();
+  headers.append("Content-Type: application/json");
+  headers.append("Accept: application/json");
+  headers.append(& format!("X-Auth-Token: {}", info.token))?;
+  headers.append("Expect: ");
+  easy.verbose(true);
+  easy.post(false);
+  easy.url(& format!("{}", info.url))?;
+  easy.http_headers(headers);
+  {
+    let mut transfer = easy.transfer();
+    transfer.header_function(|header| {
+      let mut splitter = str::from_utf8(header).unwrap().splitn(2, ": ");
+      match splitter.next() {
+        Some(name) if name.to_lowercase() == "x-account-meta-temp-url-key" => {
+          splitter.next().map(|s| s.to_owned()).map(|t| {
+            opt_temp_url_key = Some(t.trim().to_owned());
+          }); ()
+        }
+        _ => ()
+      }
+      true
+    })?;
+    transfer.perform()?
+  }
+  opt_temp_url_key
+    .ok_or(MissingToken)
+    .map_err(|e| From::from(e))
+}
+
+fn create_random_key() -> String {
+  thread_rng().gen_ascii_chars().take(32).collect()
+}
+
+fn set_temp_url_key(info: &SwiftAuthInfo, temp_url_key: &str) -> Result<String, Box<Error>> {
+  let mut easy = Easy::new();
+  let mut headers = List::new();
+  headers.append("Content-Type: application/json");
+  headers.append("Accept: application/json");
+  headers.append(& format!("X-Auth-Token: {}", info.token))?;
+  headers.append(& format!("X-Account-Meta-Temp-Url-Key: {}", temp_url_key));
+  headers.append("Expect: ");
+  easy.verbose(true);
+  easy.post(true);
+  easy.url(& format!("{}", info.url))?;
+  easy.http_headers(headers);
+  easy.perform()?;
+  easy.response_code()
+    .map_err(|e| From::from(e))
+    .and_then(|code| {
+      match code {
+        200...299 => Ok(temp_url_key.to_owned()),
+        _ => Err(From::from(MissingToken))
+      }
+    })
 }

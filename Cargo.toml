@@ -5,4 +5,5 @@ authors = ["Tim Dettrick <t.dettrick@uq.edu.au>"]
 
 [dependencies]
 curl = "0.4.8"
+rand = "0.3"
 serde_json = "1.0"
