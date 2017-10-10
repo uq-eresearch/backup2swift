@@ -1,18 +1,32 @@
-extern crate clap;
+#[macro_use] extern crate clap;
 extern crate curl;
+extern crate hex;
+extern crate hmac;
+#[macro_use] extern crate log;
 extern crate rand;
-#[macro_use]
-extern crate serde_json;
+extern crate sha_1;
+#[macro_use] extern crate serde_json;
+extern crate stderrlog;
+extern crate url;
 
 use clap::{Arg, App, SubCommand};
+use hmac::{Hmac, Mac};
+use log::LogLevel;
 use rand::{thread_rng, Rng};
+use hex::ToHex;
+use sha_1::Sha1;
 use std::env;
 use std::fmt;
 use std::error::Error;
 use std::io::{BufReader, Read};
 use std::str;
+use url::Url;
 
 use curl::easy::{Easy, List};
+
+const FORM_MAX_FILE_SIZE: u64 = 1099511627776;
+const FORM_MAX_FILE_COUNT: u64 = 1048576;
+const FORM_EXPIRES: u64 = 4102444800;
 
 #[derive(Debug)]
 struct OpenStackConfig {
@@ -111,6 +125,14 @@ impl Error for UnableToCreateContainer {
 fn main() {
   let matches =
     App::new("backup2swift")
+      .version(crate_version!())
+      .arg(Arg::with_name("verbosity")
+           .short("v")
+           .multiple(true)
+           .help("Increase message verbosity"))
+      .arg(Arg::with_name("quiet")
+           .short("q")
+           .help("Silence all output"))
       .subcommand(SubCommand::with_name("setup")
         .about("setup container and create request signature")
         .arg(Arg::with_name("container")
@@ -118,20 +140,32 @@ fn main() {
             .required(true)
             .help("destination container name")))
       .get_matches();
+  let verbose = matches.occurrences_of("verbosity") as usize;
+  let quiet = matches.is_present("quiet");
+  stderrlog::new()
+      .module(module_path!())
+      .quiet(quiet)
+      .verbosity(verbose)
+      .init()
+      .unwrap();
   if let Some(matches) = matches.subcommand_matches("setup") {
-    let settings = get_os_settings();
-    println!("{:?}", settings);
-    let auth_info = get_token(settings).unwrap();
-    let temp_url_key =
-      get_temp_url_key(&auth_info)
-        .or_else(|e| set_temp_url_key(&auth_info, &create_random_key()))
-        .unwrap();
-    println!("{:?}", temp_url_key);
-    ensure_container_exists(&auth_info, matches.value_of("container").unwrap());
+    setup(matches.value_of("container").unwrap());
   } else {
     println!("try 'backup2swift --help' for more information");
     ::std::process::exit(2)
   }
+}
+
+fn setup(container_name: &str) -> () {
+  let settings = get_os_settings();
+  let auth_info = get_token(settings).unwrap();
+  let temp_url_key =
+    get_temp_url_key(&auth_info)
+      .or_else(|e| set_temp_url_key(&auth_info, &create_random_key()))
+      .unwrap();
+  ensure_container_exists(&auth_info, container_name);
+  let json_config = backup_config(&auth_info, container_name, &temp_url_key);
+  println!("{}", serde_json::to_string_pretty(&json_config).unwrap());
 }
 
 fn get_env(name: &str) -> String {
@@ -140,19 +174,19 @@ fn get_env(name: &str) -> String {
 
 fn get_os_settings() -> OpenStackConfig {
   let auth_url = get_env("OS_AUTH_URL");
-  println!("OS_AUTH_URL: {}", &auth_url);
+  info!("OS_AUTH_URL: {}", &auth_url);
   let user_domain = get_env("OS_USER_DOMAIN_NAME");
-  println!("OS_PROJECT_NAME: {}", &user_domain);
+  info!("OS_PROJECT_NAME: {}", &user_domain);
   let username = get_env("OS_USERNAME");
-  println!("OS_USERNAME: {}", &username);
+  info!("OS_USERNAME: {}", &username);
   let project_domain = get_env("OS_PROJECT_DOMAIN_NAME");
-  println!("OS_PROJECT_NAME: {}", &project_domain);
+  info!("OS_PROJECT_NAME: {}", &project_domain);
   let project_name = get_env("OS_PROJECT_NAME");
-  println!("OS_PROJECT_NAME: {}", &project_name);
+  info!("OS_PROJECT_NAME: {}", &project_name);
   let password = get_env("OS_PASSWORD");
-  println!("OS_PASSWORD: {}", &("*".repeat(password.len())));
+  info!("OS_PASSWORD: {}", &("*".repeat(password.len())));
   let region_name = get_env("OS_REGION_NAME");
-  println!("OS_REGION_NAME: {}",  &region_name);
+  info!("OS_REGION_NAME: {}",  &region_name);
 
   OpenStackConfig {
     auth_url,
@@ -202,7 +236,7 @@ fn get_token(config: OpenStackConfig) -> Result<SwiftAuthInfo, Box<Error>> {
   headers.append(format!("Content-Length: {}", json_bytes.len()).as_ref());
   headers.append("Accept: application/json");
   headers.append("Expect: ");
-  easy.verbose(false);
+  easy.verbose(log_enabled!(LogLevel::Debug));
   easy.post(true);
   easy.url(& format!("{}auth/tokens", config.auth_url))?;
   easy.http_headers(headers);
@@ -284,7 +318,7 @@ fn get_temp_url_key(info: &SwiftAuthInfo) -> Result<String, Box<Error>> {
   let mut headers = List::new();
   headers.append(& format!("X-Auth-Token: {}", info.token))?;
   headers.append("Expect: ");
-  easy.verbose(true);
+  easy.verbose(log_enabled!(LogLevel::Debug));
   easy.nobody(true);
   easy.url(& format!("{}", info.url))?;
   easy.http_headers(headers);
@@ -319,7 +353,7 @@ fn set_temp_url_key(info: &SwiftAuthInfo, temp_url_key: &str) -> Result<String, 
   headers.append(& format!("X-Auth-Token: {}", info.token))?;
   headers.append(& format!("X-Account-Meta-Temp-Url-Key: {}", temp_url_key));
   headers.append("Expect: ");
-  easy.verbose(true);
+  easy.verbose(log_enabled!(LogLevel::Debug));
   easy.post(true);
   easy.url(& format!("{}", info.url))?;
   easy.http_headers(headers);
@@ -339,7 +373,7 @@ fn ensure_container_exists(info: &SwiftAuthInfo, container: &str) -> Result<(), 
   let mut headers = List::new();
   headers.append(& format!("X-Auth-Token: {}", info.token))?;
   headers.append("Expect: ");
-  easy.verbose(true);
+  easy.verbose(log_enabled!(LogLevel::Debug));
   easy.nobody(true);
   easy.url(& format!("{}/{}", info.url, container))?;
   easy.http_headers(headers);
@@ -360,7 +394,7 @@ fn create_container(info: &SwiftAuthInfo, container: &str) -> Result<(), Box<Err
   headers.append("Content-Length: 0");
   headers.append(& format!("X-Auth-Token: {}", info.token))?;
   headers.append("Expect: ");
-  easy.verbose(true);
+  easy.verbose(log_enabled!(LogLevel::Debug));
   easy.put(true);
   easy.url(& format!("{}/{}", info.url, container))?;
   easy.http_headers(headers);
@@ -373,4 +407,51 @@ fn create_container(info: &SwiftAuthInfo, container: &str) -> Result<(), Box<Err
         _ => Err(From::from(UnableToCreateContainer))
       }
     })
+}
+
+fn form_post_url(info: &SwiftAuthInfo, container: &str) -> Url {
+  Url::parse(&info.url).unwrap().join(container).unwrap()
+}
+
+fn signature(
+    signature_path: &str,
+    redirect: &str,
+    max_file_size: &u64,
+    max_file_count: &u64,
+    expires: &u64,
+    temp_url_key: &str) -> String {
+  let input = format!(
+    "{}\n{}\n{}\n{}\n{}",
+    signature_path,
+    redirect,
+    max_file_size,
+    max_file_count,
+    expires
+  );
+  // Create `Mac` trait implementation, namely HMAC-SHA256
+  let mut mac = Hmac::<Sha1>::new(temp_url_key.as_bytes());
+  mac.input(input.as_bytes());
+  mac.result().code().to_hex()
+}
+
+fn backup_config(info: &SwiftAuthInfo, container: &str, temp_url_key: &str) -> serde_json::Value {
+  let url: Url = form_post_url(info, container);
+  let redirect = "";
+  let max_file_size = FORM_MAX_FILE_SIZE;
+  let max_file_count = FORM_MAX_FILE_COUNT;
+  let expires = FORM_EXPIRES;
+  json!({
+    "url": url.as_str(),
+    "redirect": redirect,
+    "max_file_size": max_file_size,
+    "max_file_count": max_file_count,
+    "expires": expires,
+    "signature": signature(
+      url.path(),
+      redirect,
+      &max_file_size,
+      &max_file_count,
+      &expires,
+      temp_url_key)
+  })
 }
