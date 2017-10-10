@@ -1,0 +1,8 @@
+[package]
+name = "backup2swift"
+version = "0.1.0"
+authors = ["Tim Dettrick <t.dettrick@uq.edu.au>"]
+
+[dependencies]
+curl = "0.4.8"
+serde_json = "1.0"
