@@ -70,6 +70,43 @@ impl Error for MissingSwiftUrl {
   }
 }
 
+#[derive(Debug)]
+struct MissingTempUrlKey;
+
+impl fmt::Display for MissingTempUrlKey {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(f, "Temp URL key not found in Swift response headers")
+  }
+}
+
+impl Error for MissingTempUrlKey {
+  fn description(&self) -> &str {
+    "Temp URL key not found in Swift response headers"
+  }
+
+  fn cause(&self) -> Option<&Error> {
+    None
+  }
+}
+
+#[derive(Debug)]
+struct UnableToCreateContainer;
+
+impl fmt::Display for UnableToCreateContainer {
+  fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    write!(f, "Unable to create Swift container")
+  }
+}
+
+impl Error for UnableToCreateContainer {
+  fn description(&self) -> &str {
+    "Unable to create Swift container"
+  }
+
+  fn cause(&self) -> Option<&Error> {
+    None
+  }
+}
 
 fn main() {
   let matches =
@@ -81,15 +118,16 @@ fn main() {
             .required(true)
             .help("destination container name")))
       .get_matches();
-  if let Some(matches) = matches.subcommand_matches("test") {
+  if let Some(matches) = matches.subcommand_matches("setup") {
     let settings = get_os_settings();
     println!("{:?}", settings);
     let auth_info = get_token(settings).unwrap();
-    let server_info =
+    let temp_url_key =
       get_temp_url_key(&auth_info)
         .or_else(|e| set_temp_url_key(&auth_info, &create_random_key()))
         .unwrap();
-    println!("{:?}", server_info);
+    println!("{:?}", temp_url_key);
+    ensure_container_exists(&auth_info, matches.value_of("container").unwrap());
   } else {
     println!("try 'backup2swift --help' for more information");
     ::std::process::exit(2)
@@ -244,12 +282,10 @@ fn get_temp_url_key(info: &SwiftAuthInfo) -> Result<String, Box<Error>> {
   let mut opt_temp_url_key: Option<String> = None;
   let mut easy = Easy::new();
   let mut headers = List::new();
-  headers.append("Content-Type: application/json");
-  headers.append("Accept: application/json");
   headers.append(& format!("X-Auth-Token: {}", info.token))?;
   headers.append("Expect: ");
   easy.verbose(true);
-  easy.post(false);
+  easy.nobody(true);
   easy.url(& format!("{}", info.url))?;
   easy.http_headers(headers);
   {
@@ -280,8 +316,6 @@ fn create_random_key() -> String {
 fn set_temp_url_key(info: &SwiftAuthInfo, temp_url_key: &str) -> Result<String, Box<Error>> {
   let mut easy = Easy::new();
   let mut headers = List::new();
-  headers.append("Content-Type: application/json");
-  headers.append("Accept: application/json");
   headers.append(& format!("X-Auth-Token: {}", info.token))?;
   headers.append(& format!("X-Account-Meta-Temp-Url-Key: {}", temp_url_key));
   headers.append("Expect: ");
@@ -295,7 +329,48 @@ fn set_temp_url_key(info: &SwiftAuthInfo, temp_url_key: &str) -> Result<String, 
     .and_then(|code| {
       match code {
         200...299 => Ok(temp_url_key.to_owned()),
-        _ => Err(From::from(MissingToken))
+        _ => Err(From::from(MissingTempUrlKey))
+      }
+    })
+}
+
+fn ensure_container_exists(info: &SwiftAuthInfo, container: &str) -> Result<(), Box<Error>> {
+  let mut easy = Easy::new();
+  let mut headers = List::new();
+  headers.append(& format!("X-Auth-Token: {}", info.token))?;
+  headers.append("Expect: ");
+  easy.verbose(true);
+  easy.nobody(true);
+  easy.url(& format!("{}/{}", info.url, container))?;
+  easy.http_headers(headers);
+  easy.perform()?;
+  easy.response_code()
+    .map_err(|e| From::from(e))
+    .and_then(|code| {
+      match code {
+        200...299 => Ok(()),
+        _ => create_container(info, container)
+      }
+    })
+}
+
+fn create_container(info: &SwiftAuthInfo, container: &str) -> Result<(), Box<Error>> {
+  let mut easy = Easy::new();
+  let mut headers = List::new();
+  headers.append("Content-Length: 0");
+  headers.append(& format!("X-Auth-Token: {}", info.token))?;
+  headers.append("Expect: ");
+  easy.verbose(true);
+  easy.put(true);
+  easy.url(& format!("{}/{}", info.url, container))?;
+  easy.http_headers(headers);
+  easy.perform()?;
+  easy.response_code()
+    .map_err(|e| From::from(e))
+    .and_then(|response_code| {
+      match response_code {
+        200...299 => Ok(()),
+        _ => Err(From::from(UnableToCreateContainer))
       }
     })
 }
