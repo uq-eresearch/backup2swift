@@ -17,7 +17,7 @@ backup2swift setup my_backup_container > config.json
 Then, after copying config.json to the system that needs to perform file backups:
 
 ```
-backup2swift -c config.json monday-backup-files.tar.gz monday-backup-db.sql.xz
+backup2swift -c config.json --delete-after 2592000 monday-backup-files.tar.gz monday-backup-db.sql.xz
 ```
 
 ## Static binary
