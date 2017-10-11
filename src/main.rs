@@ -165,9 +165,9 @@ fn main() {
           .required(true)
           .takes_value(true)
           .help("JSON config created with \"setup\""))
-        .arg(Arg::with_name("expire_after")
+        .arg(Arg::with_name("delete_after")
           .short("t")
-          .long("expire-after")
+          .long("delete-after")
           .takes_value(true)
           .help("seconds to keep file for"))
         .arg(Arg::with_name("files")
@@ -190,7 +190,7 @@ fn main() {
     let config = Path::new(matches.value_of("config").unwrap());
     assert!(config.is_file());
 
-    let expire_after = value_t!(matches, "expire_after", u64).ok();
+    let expire_after = value_t!(matches, "delete_after", u64).ok();
     let file_paths = matches.values_of_lossy("files").unwrap();
     let mut files: &Vec<&Path> = & file_paths.iter().map(|f| Path::new(f)).collect::<Vec<&Path>>();
     assert!(files.into_iter().all(|f: &&Path| f.is_file()));
@@ -215,7 +215,7 @@ fn setup(container_name: &str) -> () {
 
 fn backup<'a>(
     config_file: &'a Path,
-    expire_after: Option<u64>,
+    delete_after: Option<u64>,
     files: &'a Vec<&Path>) -> () {
   let form_template = read_config_file(config_file).unwrap();
   let file_count = files.len();
@@ -235,16 +235,18 @@ fn backup<'a>(
       })
       .collect::<Vec<(String, FilePart)>>();
   info!("{:?}", file_parts);
-  let form_data = FormData {
-    fields: vec![
-      ("redirect".to_owned(), form_template.redirect.to_owned()),
-      ("max_file_size".to_owned(), format!("{}", form_template.max_file_size)),
-      ("max_file_count".to_owned(), format!("{}", form_template.max_file_count)),
-      ("expires".to_owned(), format!("{}", form_template.expires)),
-      ("signature".to_owned(), format!("{}", form_template.signature))
-    ],
-    files: file_parts
+  let mut fields = vec![
+    ("redirect".to_owned(), form_template.redirect.to_owned()),
+    ("max_file_size".to_owned(), format!("{}", form_template.max_file_size)),
+    ("max_file_count".to_owned(), format!("{}", form_template.max_file_count)),
+    ("expires".to_owned(), format!("{}", form_template.expires)),
+    ("signature".to_owned(), format!("{}", form_template.signature))
+  ];
+  match delete_after {
+    Some(n) => fields.push(("x_delete_after".to_owned(), format!("{}", n))),
+    None => ()
   };
+  let form_data = FormData { fields: fields, files: file_parts };
   send_data(form_template, form_data);
 }
 
@@ -566,7 +568,7 @@ fn send_data(form_template: FormTemplate, form_data: FormData) -> Result<(), Box
     spawn(move || write_formdata(&mut bw, &boundary, &form_data));
     let mut transfer = easy.transfer();
     transfer.read_function(|into| {
-      Ok(br.read(into).unwrap_or(0));
+      Ok(br.read(into).unwrap_or(0))
     })?;
     transfer.perform()?;
   }
