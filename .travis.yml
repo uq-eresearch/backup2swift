@@ -1,4 +1,5 @@
 language: rust
+sudo: required
 rust:
   - stable
   - beta
@@ -6,3 +7,17 @@ rust:
 matrix:
   allow_failures:
     - rust: nightly
+services:
+  - docker
+before_deploy:
+  - sudo docker run -v $PWD:/build -w /build -t clux/muslrust cargo build --release
+deploy:
+  provider: releases
+  api_key:
+    secure: "J7MCMrhFyiyILe5pPziplPdHk+TEu5KFICcP/YFMaUZTlEU9H+eUGiA+GEnKC5sgo8sepKTNEn2S2nq3TUquGHdipXCe5ayGoyEINeI8cSLiisALwXxI4RCU0XrsF8ExyL3REJ3i+Kd6UxL5wx1ng9gOCYSnUw0U7mNoaWXDH2/W8wLBZ37/pfkCNYK93HxbUwAH9dZ3MLlbNwzcM/GHRWhDL/UdKuWewCCfuYDGRws+si5XCmhU/l7gOIbaEIDORuOuprqPqQBaXvFFAXLGclAzE4Wx8Pv9VLV3ryV9aF7B2CttZ2+kyYNEqJLLoOZAWWPOa9iJtALcD0iuqDzEHSiiOk5kfwsOwf+9wNbEl+6WPS2ss4/+OO7QGOoGlwgizk5h2Iu1+P0x5I/47sZlvc7716AST1UIuad6DFmHLFJAIDj/tKL5Cw/HohPJgWG7iz2c0m6AOAN/hj7o8kPTHqmO8fDVhnWECHooxWbp3Z4C3zKctn6u8slcxLI/vn764axoJMT7DfThrFQbfYVnWokpcONXxx4rI9Rg88Mdo89rJpH5Z276JQg+nKv4329gOreZ30s5bTt3VhtId8K4o/+K+a9duN/kFl2tZ6f0KeiIzHLQU3wuv/wdD/h5vK9xw7IROsq6J+KSrcRTBjxGKX1ilKWI2+L+oKcdSFmnqcc="
+  skip_cleanup: true
+  file:
+    - target/x86_64-unknown-linux-musl/release/backup2swift
+  on:
+    rust: stable
+    tags: true
