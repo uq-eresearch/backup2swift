@@ -1,31 +1,39 @@
 #[macro_use] extern crate clap;
 extern crate curl;
+extern crate formdata;
 extern crate hex;
 extern crate hmac;
+extern crate hyper;
 #[macro_use] extern crate log;
+extern crate pipe;
 extern crate rand;
 extern crate sha_1;
 #[macro_use] extern crate serde_json;
+#[macro_use] extern crate serde_derive;
 extern crate stderrlog;
 extern crate url;
 
 use clap::{Arg, App, SubCommand};
+use formdata::{FormData, FilePart, write_formdata};
 use hmac::{Hmac, Mac};
 use log::LogLevel;
 use rand::{thread_rng, Rng};
 use hex::ToHex;
 use sha_1::Sha1;
 use std::env;
-use std::fmt;
 use std::error::Error;
-use std::io::{BufReader, Read};
+use std::fmt;
+use std::fs::File;
+use std::path::Path;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::str;
+use std::thread::spawn;
 use url::Url;
 
 use curl::easy::{Easy, List};
 
 const FORM_MAX_FILE_SIZE: u64 = 1099511627776;
-const FORM_MAX_FILE_COUNT: u64 = 1048576;
+const FORM_MAX_FILE_COUNT: usize = 1048576;
 const FORM_EXPIRES: u64 = 4102444800;
 
 #[derive(Debug)]
@@ -43,6 +51,16 @@ struct OpenStackConfig {
 struct SwiftAuthInfo {
   token: String,
   url: String
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct FormTemplate {
+  url: String,
+  redirect: String,
+  max_file_size: u64,
+  max_file_count: usize,
+  expires: u64,
+  signature: String
 }
 
 #[derive(Debug)]
@@ -127,18 +145,36 @@ fn main() {
     App::new("backup2swift")
       .version(crate_version!())
       .arg(Arg::with_name("verbosity")
-           .short("v")
-           .multiple(true)
-           .help("Increase message verbosity"))
+        .short("v")
+        .multiple(true)
+        .help("Increase message verbosity"))
       .arg(Arg::with_name("quiet")
-           .short("q")
-           .help("Silence all output"))
+        .short("q")
+        .help("Silence all output"))
       .subcommand(SubCommand::with_name("setup")
         .about("setup container and create request signature")
         .arg(Arg::with_name("container")
-            .takes_value(true)
-            .required(true)
-            .help("destination container name")))
+          .takes_value(true)
+          .required(true)
+          .help("destination container name")))
+      .subcommand(SubCommand::with_name("backup")
+        .about("backup files to container")
+        .arg(Arg::with_name("config")
+          .short("c")
+          .long("config")
+          .required(true)
+          .takes_value(true)
+          .help("JSON config created with \"setup\""))
+        .arg(Arg::with_name("expire_after")
+          .short("t")
+          .long("expire-after")
+          .takes_value(true)
+          .help("seconds to keep file for"))
+        .arg(Arg::with_name("files")
+          .takes_value(true)
+          .multiple(true)
+          .required(true)
+          .help("destination container name")))
       .get_matches();
   let verbose = matches.occurrences_of("verbosity") as usize;
   let quiet = matches.is_present("quiet");
@@ -150,6 +186,15 @@ fn main() {
       .unwrap();
   if let Some(matches) = matches.subcommand_matches("setup") {
     setup(matches.value_of("container").unwrap());
+  } else if let Some(matches) = matches.subcommand_matches("backup") {
+    let config = Path::new(matches.value_of("config").unwrap());
+    assert!(config.is_file());
+
+    let expire_after = value_t!(matches, "expire_after", u64).ok();
+    let file_paths = matches.values_of_lossy("files").unwrap();
+    let mut files: &Vec<&Path> = & file_paths.iter().map(|f| Path::new(f)).collect::<Vec<&Path>>();
+    assert!(files.into_iter().all(|f: &&Path| f.is_file()));
+    backup(config, expire_after, files);
   } else {
     println!("try 'backup2swift --help' for more information");
     ::std::process::exit(2)
@@ -164,8 +209,43 @@ fn setup(container_name: &str) -> () {
       .or_else(|e| set_temp_url_key(&auth_info, &create_random_key()))
       .unwrap();
   ensure_container_exists(&auth_info, container_name);
-  let json_config = backup_config(&auth_info, container_name, &temp_url_key);
-  println!("{}", serde_json::to_string_pretty(&json_config).unwrap());
+  let form_template = backup_config(&auth_info, container_name, &temp_url_key);
+  info!("{}", serde_json::to_string_pretty(&form_template).unwrap());
+}
+
+fn backup<'a>(
+    config_file: &'a Path,
+    expire_after: Option<u64>,
+    files: &'a Vec<&Path>) -> () {
+  let form_template = read_config_file(config_file).unwrap();
+  let file_count = files.len();
+  info!("{:?}", form_template);
+  assert!(form_template.max_file_count >= file_count);
+  let file_parts: Vec<(String, FilePart)> =
+    files.into_iter()
+      .zip(std::ops::Range { start: 0, end: file_count })
+      .map(|(f,i): (&&Path, usize)| {
+        let mut headers = hyper::header::Headers::new();
+        headers.append_raw("Content-Type", "application/octet-stream".to_owned().into_bytes());
+        let output: (String, FilePart) = (
+          format!("file{}", i),
+          formdata::FilePart::new(headers, f)
+        );
+        output
+      })
+      .collect::<Vec<(String, FilePart)>>();
+  info!("{:?}", file_parts);
+  let form_data = FormData {
+    fields: vec![
+      ("redirect".to_owned(), form_template.redirect.to_owned()),
+      ("max_file_size".to_owned(), format!("{}", form_template.max_file_size)),
+      ("max_file_count".to_owned(), format!("{}", form_template.max_file_count)),
+      ("expires".to_owned(), format!("{}", form_template.expires)),
+      ("signature".to_owned(), format!("{}", form_template.signature))
+    ],
+    files: file_parts
+  };
+  send_data(form_template, form_data);
 }
 
 fn get_env(name: &str) -> String {
@@ -410,14 +490,14 @@ fn create_container(info: &SwiftAuthInfo, container: &str) -> Result<(), Box<Err
 }
 
 fn form_post_url(info: &SwiftAuthInfo, container: &str) -> Url {
-  Url::parse(&info.url).unwrap().join(container).unwrap()
+  Url::parse(& format!("{}/{}/", info.url, container)).unwrap()
 }
 
 fn signature(
     signature_path: &str,
     redirect: &str,
     max_file_size: &u64,
-    max_file_count: &u64,
+    max_file_count: &usize,
     expires: &u64,
     temp_url_key: &str) -> String {
   let input = format!(
@@ -434,24 +514,61 @@ fn signature(
   mac.result().code().to_hex()
 }
 
-fn backup_config(info: &SwiftAuthInfo, container: &str, temp_url_key: &str) -> serde_json::Value {
+fn backup_config(info: &SwiftAuthInfo, container: &str, temp_url_key: &str) -> FormTemplate {
   let url: Url = form_post_url(info, container);
   let redirect = "";
   let max_file_size = FORM_MAX_FILE_SIZE;
   let max_file_count = FORM_MAX_FILE_COUNT;
   let expires = FORM_EXPIRES;
-  json!({
-    "url": url.as_str(),
-    "redirect": redirect,
-    "max_file_size": max_file_size,
-    "max_file_count": max_file_count,
-    "expires": expires,
-    "signature": signature(
+  FormTemplate {
+    url: url.as_str().to_owned(),
+    redirect: redirect.to_owned(),
+    max_file_size: max_file_size,
+    max_file_count: max_file_count,
+    expires: expires,
+    signature: signature(
       url.path(),
       redirect,
       &max_file_size,
       &max_file_count,
       &expires,
       temp_url_key)
-  })
+  }
+}
+
+fn read_config_file<'a>(config_file: &'a Path) -> Result<FormTemplate, Box<Error>> {
+  let f = File::open(config_file)?;
+  let rdr = BufReader::new(f);
+  serde_json::from_reader(rdr).map_err(|e| From::from(e))
+}
+
+fn send_data(form_template: FormTemplate, form_data: FormData) -> Result<(), Box<Error>> {
+  let mut headers = List::new();
+  let boundaryStr: &str = & {
+    let randStr: String = thread_rng().gen_ascii_chars().take(20).collect();
+    "-".repeat(20).to_string() + &randStr
+  };
+  let boundary: Vec<u8> = boundaryStr.to_owned().into_bytes();
+  let mut sink = std::io::sink();
+  let content_length = write_formdata(&mut sink, &boundary, &form_data)?;
+  headers.append(& format!("Content-Length: {}", content_length));
+  headers.append(& format!("Content-Type: multipart/form-data; boundary={}", boundaryStr));
+  let mut easy = Easy::new();
+  easy.verbose(log_enabled!(LogLevel::Debug));
+  easy.post(true);
+  easy.url(& form_template.url)?;
+  easy.http_headers(headers);
+  {
+    const buffer_size: usize = 524288;
+    let (mut r, mut w) = pipe::pipe();
+    let mut br = BufReader::with_capacity(buffer_size, r);
+    let mut bw = BufWriter::with_capacity(buffer_size, w);
+    spawn(move || write_formdata(&mut bw, &boundary, &form_data));
+    let mut transfer = easy.transfer();
+    transfer.read_function(|into| {
+      Ok(br.read(into).unwrap_or(0));
+    })?;
+    transfer.perform()?;
+  }
+  Ok(())
 }
