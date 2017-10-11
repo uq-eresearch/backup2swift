@@ -1,6 +1,6 @@
 [package]
 name = "backup2swift"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Tim Dettrick <t.dettrick@uq.edu.au>"]
 
 [dependencies]
