@@ -25,7 +25,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs::File;
 use std::path::Path;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Read};
 use std::str;
 use std::thread::spawn;
 use url::Url;
@@ -192,7 +192,7 @@ fn main() {
 
     let expire_after = value_t!(matches, "delete_after", u64).ok();
     let file_paths = matches.values_of_lossy("files").unwrap();
-    let mut files: &Vec<&Path> = & file_paths.iter().map(|f| Path::new(f)).collect::<Vec<&Path>>();
+    let files: &Vec<&Path> = & file_paths.iter().map(|f| Path::new(f)).collect::<Vec<&Path>>();
     assert!(files.into_iter().all(|f: &&Path| f.is_file()));
     backup(config, expire_after, files);
   } else {
@@ -206,9 +206,9 @@ fn setup(container_name: &str) -> () {
   let auth_info = get_token(settings).unwrap();
   let temp_url_key =
     get_temp_url_key(&auth_info)
-      .or_else(|e| set_temp_url_key(&auth_info, &create_random_key()))
+      .or_else(|_| set_temp_url_key(&auth_info, &create_random_key()))
       .unwrap();
-  ensure_container_exists(&auth_info, container_name);
+  ensure_container_exists(&auth_info, container_name).unwrap();
   let form_template = backup_config(&auth_info, container_name, &temp_url_key);
   info!("{}", serde_json::to_string_pretty(&form_template).unwrap());
 }
@@ -247,7 +247,7 @@ fn backup<'a>(
     None => ()
   };
   let form_data = FormData { fields: fields, files: file_parts };
-  send_data(form_template, form_data);
+  send_data(form_template, form_data).unwrap();
 }
 
 fn get_env(name: &str) -> String {
@@ -314,14 +314,14 @@ fn get_token(config: OpenStackConfig) -> Result<SwiftAuthInfo, Box<Error>> {
   let mut req_reader = BufReader::new(json_bytes.as_slice());
   let mut headers = List::new();
   let mut opt_token: Option<String> = None;
-  headers.append("Content-Type: application/json");
-  headers.append(format!("Content-Length: {}", json_bytes.len()).as_ref());
-  headers.append("Accept: application/json");
-  headers.append("Expect: ");
-  easy.verbose(log_enabled!(LogLevel::Debug));
-  easy.post(true);
+  headers.append("Content-Type: application/json")?;
+  headers.append(format!("Content-Length: {}", json_bytes.len()).as_ref())?;
+  headers.append("Accept: application/json")?;
+  headers.append("Expect: ")?;
+  easy.verbose(log_enabled!(LogLevel::Debug))?;
+  easy.post(true)?;
   easy.url(& format!("{}auth/tokens", config.auth_url))?;
-  easy.http_headers(headers);
+  easy.http_headers(headers)?;
   {
     let mut transfer = easy.transfer();
     transfer.header_function(|header| {
@@ -399,11 +399,11 @@ fn get_temp_url_key(info: &SwiftAuthInfo) -> Result<String, Box<Error>> {
   let mut easy = Easy::new();
   let mut headers = List::new();
   headers.append(& format!("X-Auth-Token: {}", info.token))?;
-  headers.append("Expect: ");
-  easy.verbose(log_enabled!(LogLevel::Debug));
-  easy.nobody(true);
+  headers.append("Expect: ")?;
+  easy.verbose(log_enabled!(LogLevel::Debug))?;
+  easy.nobody(true)?;
   easy.url(& format!("{}", info.url))?;
-  easy.http_headers(headers);
+  easy.http_headers(headers)?;
   {
     let mut transfer = easy.transfer();
     transfer.header_function(|header| {
@@ -433,12 +433,12 @@ fn set_temp_url_key(info: &SwiftAuthInfo, temp_url_key: &str) -> Result<String, 
   let mut easy = Easy::new();
   let mut headers = List::new();
   headers.append(& format!("X-Auth-Token: {}", info.token))?;
-  headers.append(& format!("X-Account-Meta-Temp-Url-Key: {}", temp_url_key));
-  headers.append("Expect: ");
-  easy.verbose(log_enabled!(LogLevel::Debug));
-  easy.post(true);
+  headers.append(& format!("X-Account-Meta-Temp-Url-Key: {}", temp_url_key))?;
+  headers.append("Expect: ")?;
+  easy.verbose(log_enabled!(LogLevel::Debug))?;
+  easy.post(true)?;
   easy.url(& format!("{}", info.url))?;
-  easy.http_headers(headers);
+  easy.http_headers(headers)?;
   easy.perform()?;
   easy.response_code()
     .map_err(|e| From::from(e))
@@ -454,11 +454,11 @@ fn ensure_container_exists(info: &SwiftAuthInfo, container: &str) -> Result<(), 
   let mut easy = Easy::new();
   let mut headers = List::new();
   headers.append(& format!("X-Auth-Token: {}", info.token))?;
-  headers.append("Expect: ");
-  easy.verbose(log_enabled!(LogLevel::Debug));
-  easy.nobody(true);
+  headers.append("Expect: ")?;
+  easy.verbose(log_enabled!(LogLevel::Debug))?;
+  easy.nobody(true)?;
   easy.url(& format!("{}/{}", info.url, container))?;
-  easy.http_headers(headers);
+  easy.http_headers(headers)?;
   easy.perform()?;
   easy.response_code()
     .map_err(|e| From::from(e))
@@ -473,13 +473,13 @@ fn ensure_container_exists(info: &SwiftAuthInfo, container: &str) -> Result<(), 
 fn create_container(info: &SwiftAuthInfo, container: &str) -> Result<(), Box<Error>> {
   let mut easy = Easy::new();
   let mut headers = List::new();
-  headers.append("Content-Length: 0");
+  headers.append("Content-Length: 0")?;
   headers.append(& format!("X-Auth-Token: {}", info.token))?;
-  headers.append("Expect: ");
-  easy.verbose(log_enabled!(LogLevel::Debug));
-  easy.put(true);
+  headers.append("Expect: ")?;
+  easy.verbose(log_enabled!(LogLevel::Debug))?;
+  easy.put(true)?;
   easy.url(& format!("{}/{}", info.url, container))?;
-  easy.http_headers(headers);
+  easy.http_headers(headers)?;
   easy.perform()?;
   easy.response_code()
     .map_err(|e| From::from(e))
@@ -546,25 +546,25 @@ fn read_config_file<'a>(config_file: &'a Path) -> Result<FormTemplate, Box<Error
 
 fn send_data(form_template: FormTemplate, form_data: FormData) -> Result<(), Box<Error>> {
   let mut headers = List::new();
-  let boundaryStr: &str = & {
-    let randStr: String = thread_rng().gen_ascii_chars().take(20).collect();
-    "-".repeat(20).to_string() + &randStr
+  let boundary_str: &str = & {
+    let rand_str: String = thread_rng().gen_ascii_chars().take(20).collect();
+    "-".repeat(20).to_string() + &rand_str
   };
-  let boundary: Vec<u8> = boundaryStr.to_owned().into_bytes();
+  let boundary: Vec<u8> = boundary_str.to_owned().into_bytes();
   let mut sink = std::io::sink();
   let content_length = write_formdata(&mut sink, &boundary, &form_data)?;
-  headers.append(& format!("Content-Length: {}", content_length));
-  headers.append(& format!("Content-Type: multipart/form-data; boundary={}", boundaryStr));
+  headers.append(& format!("Content-Length: {}", content_length))?;
+  headers.append(& format!("Content-Type: multipart/form-data; boundary={}", boundary_str))?;
   let mut easy = Easy::new();
-  easy.verbose(log_enabled!(LogLevel::Debug));
-  easy.post(true);
+  easy.verbose(log_enabled!(LogLevel::Debug))?;
+  easy.post(true)?;
   easy.url(& form_template.url)?;
-  easy.http_headers(headers);
+  easy.http_headers(headers)?;
   {
-    const buffer_size: usize = 524288;
-    let (mut r, mut w) = pipe::pipe();
-    let mut br = BufReader::with_capacity(buffer_size, r);
-    let mut bw = BufWriter::with_capacity(buffer_size, w);
+    const BUFFER_SIZE: usize = 524288;
+    let (r, w) = pipe::pipe();
+    let mut br = BufReader::with_capacity(BUFFER_SIZE, r);
+    let mut bw = BufWriter::with_capacity(BUFFER_SIZE, w);
     spawn(move || write_formdata(&mut bw, &boundary, &form_data));
     let mut transfer = easy.transfer();
     transfer.read_function(|into| {
