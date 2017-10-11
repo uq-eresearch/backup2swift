@@ -152,19 +152,19 @@ fn main() {
         .short("q")
         .help("Silence all output"))
       .subcommand(SubCommand::with_name("setup")
-        .about("setup container and create request signature")
+        .about("Setup container and create signed form template")
         .arg(Arg::with_name("container")
           .takes_value(true)
           .required(true)
           .help("destination container name")))
       .subcommand(SubCommand::with_name("backup")
-        .about("backup files to container")
-        .arg(Arg::with_name("config")
+        .about("Backup files to container")
+        .arg(Arg::with_name("form_template")
           .short("c")
-          .long("config")
+          .long("form-template")
           .required(true)
           .takes_value(true)
-          .help("JSON config created with \"setup\""))
+          .help("signed POST form template (JSON) created with \"setup\""))
         .arg(Arg::with_name("delete_after")
           .short("t")
           .long("delete-after")
@@ -187,14 +187,14 @@ fn main() {
   if let Some(matches) = matches.subcommand_matches("setup") {
     setup(matches.value_of("container").unwrap());
   } else if let Some(matches) = matches.subcommand_matches("backup") {
-    let config = Path::new(matches.value_of("config").unwrap());
-    assert!(config.is_file());
+    let form_template_file = Path::new(matches.value_of("form_template").unwrap());
+    assert!(form_template_file.is_file());
 
     let expire_after = value_t!(matches, "delete_after", u64).ok();
     let file_paths = matches.values_of_lossy("files").unwrap();
     let files: &Vec<&Path> = & file_paths.iter().map(|f| Path::new(f)).collect::<Vec<&Path>>();
     assert!(files.into_iter().all(|f: &&Path| f.is_file()));
-    backup(config, expire_after, files);
+    backup(form_template_file, expire_after, files);
   } else {
     println!("try 'backup2swift --help' for more information");
     ::std::process::exit(2)
@@ -214,10 +214,10 @@ fn setup(container_name: &str) -> () {
 }
 
 fn backup<'a>(
-    config_file: &'a Path,
+    form_template_file: &'a Path,
     delete_after: Option<u64>,
     files: &'a Vec<&Path>) -> () {
-  let form_template = read_config_file(config_file).unwrap();
+  let form_template = read_form_template_file(form_template_file).unwrap();
   let file_count = files.len();
   info!("{:?}", form_template);
   assert!(form_template.max_file_count >= file_count);
@@ -538,7 +538,7 @@ fn backup_config(info: &SwiftAuthInfo, container: &str, temp_url_key: &str) -> F
   }
 }
 
-fn read_config_file<'a>(config_file: &'a Path) -> Result<FormTemplate, Box<Error>> {
+fn read_form_template_file<'a>(config_file: &'a Path) -> Result<FormTemplate, Box<Error>> {
   let f = File::open(config_file)?;
   let rdr = BufReader::new(f);
   serde_json::from_reader(rdr).map_err(|e| From::from(e))
