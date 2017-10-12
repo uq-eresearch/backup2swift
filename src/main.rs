@@ -210,7 +210,7 @@ fn setup(container_name: &str) -> () {
       .unwrap();
   ensure_container_exists(&auth_info, container_name).unwrap();
   let form_template = backup_config(&auth_info, container_name, &temp_url_key);
-  info!("{}", serde_json::to_string_pretty(&form_template).unwrap());
+  println!("{}", serde_json::to_string_pretty(&form_template).unwrap());
 }
 
 fn backup<'a>(
