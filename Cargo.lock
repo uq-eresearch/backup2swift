@@ -1,6 +1,6 @@
 [root]
 name = "backup2swift"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "clap 2.26.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "curl 0.4.8 (registry+https://github.com/rust-lang/crates.io-index)",
