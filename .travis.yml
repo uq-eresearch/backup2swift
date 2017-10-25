@@ -9,8 +9,9 @@ matrix:
     - rust: nightly
 services:
   - docker
-before_deploy:
-  - sudo docker run -v $PWD:/build -w /build -t clux/muslrust cargo build --release
+after_success:
+  - cargo install cross
+  - cross build --release --target x86_64-unknown-linux-musl
 deploy:
   provider: releases
   api_key:
