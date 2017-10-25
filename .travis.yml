@@ -7,11 +7,16 @@ rust:
 matrix:
   allow_failures:
     - rust: nightly
+addons:
+  apt:
+    packages:
+      - upx-ucl
 services:
   - docker
 after_success:
   - cargo install cross
   - cross build --release --target x86_64-unknown-linux-musl
+  - upx target/x86_64-unknown-linux-musl/release/backup2swift
 deploy:
   provider: releases
   api_key:
